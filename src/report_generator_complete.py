@@ -1,0 +1,303 @@
+import os
+import json
+import logging
+from datetime import datetime
+import matplotlib.pyplot as plt
+from collections import defaultdict
+
+
+class ReportGenerator:
+    """Клас для генерації документіції про організацію та аналіз файлів"""
+
+    def __init__(self):
+        """Ініціалізація генератора звітів"""
+        self.logger = logging.getLogger(__name__)
+        self.report_dir = "reports"
+        os.makedirs(self.report_dir, exist_ok=True)
+
+    def generate_organization_report(self, source_directory, output_directory, moved_files,
+                                     uncategorized_files, categorized_files):
+        """
+        Створення документації про процес організації
+
+        Args:
+            source_directory (str): Шлях до вхідної директорії
+            output_directory (str): Шлях до виідної директорії
+            moved_files (list): Список кортежів (шлях_джерело, шлях_призначення) для переміщених файлів
+            uncategorized_files (list): Список некатегоризованих шляхів до файлів
+            categorized_files (dict): Словник, що зіставляє мови зі списками шляхів до файлів
+
+        Returns:
+            str: Шлях до згенерованої документації
+        """
+        try:
+            #Перевірка, що директорія документації існує
+            os.makedirs(self.report_dir, exist_ok=True)
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            report_filename = f"organization_report_{timestamp}.md"
+            report_path = os.path.join(self.report_dir, report_filename)
+
+            self.logger.info(f"Generating organization report at {report_path}")
+
+            #Створення графіків для документації
+            graph_path = None
+            try:
+                graph_path = self._create_language_distribution_graph(categorized_files, timestamp)
+            except Exception as e:
+                self.logger.error(f"Не вдалося створити графік розподілу мов: {str(e)}")
+
+            #Запис документації у кодуванні UTF-8
+            with open(report_path, 'w', encoding='utf-8') as f:
+                #Заголовок розділу
+                f.write("# Project Organization Report\n\n")
+                f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+
+                #Підсумковий розділ
+                f.write("## Підсумок\n\n")
+                f.write(f"- Вхідний каталог: `{source_directory}`\n")
+                f.write(f"- Вихідний каталог: `{output_directory}`\n")
+                f.write(f"- Загальна кількість переміщених файлів: {len(moved_files)}\n")
+                f.write(f"- Файли за мовами: {self._format_language_counts(categorized_files)}\n")
+                f.write(f"- Некатегорійні файли: {len(uncategorized_files)}\n\n")
+
+                #Графік розподілу мов
+                if graph_path and os.path.exists(graph_path):
+                    f.write("## Language Distribution\n\n")
+                    rel_graph_path = os.path.relpath(graph_path, self.report_dir)
+                    f.write(f"![Language Distribution]({rel_graph_path})\n\n")
+
+                #Розбивка за мовами
+                f.write("## Розбивка за мовами\n\n")
+                for lang, files in sorted(categorized_files.items(),
+                                          key=lambda x: len(x[1]),
+                                          reverse=True):
+                    if not files:
+                        continue
+
+                    f.write(f"### {lang}\n\n")
+                    f.write(f"- Підрахунок файлів: {len(files)}\n")
+                    f.write("- Приклади файлів:\n")
+                    for file_path in files[:5]:
+                        try:
+                            f.write(f"  - `{os.path.basename(file_path)}`\n")
+                        except UnicodeEncodeError:
+                            #Запасний варіант для проблемних імен файлів
+                            safe_name = os.path.basename(file_path).encode('ascii', errors='replace').decode('ascii')
+                            f.write(f"  - `{safe_name}`\n")
+                    f.write("\n")
+
+                #Некатегорійні файли
+                if uncategorized_files:
+                    f.write("## Некатегорійні файли\n\n")
+                    f.write("Наступні файли не можуть бути класифіковані за мовою:\n\n")
+                    for file_path in uncategorized_files[:20]:
+                        try:
+                            f.write(f"- `{os.path.basename(file_path)}`\n")
+                        except UnicodeEncodeError:
+                            safe_name = os.path.basename(file_path).encode('ascii', errors='replace').decode('ascii')
+                            f.write(f"- `{safe_name}`\n")
+
+                    if len(uncategorized_files) > 20:
+                        f.write(f"\n... і {len(uncategorized_files) - 20} більше файлів\n")
+                    f.write("\n")
+
+                #Структура організації
+                f.write("## Структура організації\n\n")
+                f.write(f"Файли були організовані за наступною структурою в `{output_directory}`:\n\n")
+                f.write("```\n")
+                f.write(f"{output_directory}/\n")
+                for lang in sorted(categorized_files.keys()):
+                    if categorized_files[lang]:
+                        f.write(f"├── {lang}/\n")
+                f.write("└── Інше/\n")
+                f.write("```\n\n")
+
+                #Деталі процесу
+                f.write("## Деталі процесу\n\n")
+                f.write(f"- Документація сформована: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                if moved_files:
+                    first_move = min(moved_files, key=lambda x: os.path.getctime(x[1]))
+                    last_move = max(moved_files, key=lambda x: os.path.getctime(x[1]))
+                    f.write(f"- Перший переміщений файл: {datetime.fromtimestamp(os.path.getctime(first_move[1]))}\n")
+                    f.write(f"- Останній переміщений файл: {datetime.fromtimestamp(os.path.getctime(last_move[1]))}\n")
+
+            self.logger.info(f"Документацію про організацію успішно сформовано в {report_path}")
+            return report_path
+
+        except Exception as e:
+            self.logger.error(f"Не вдалося створити документацію про організацію: {str(e)}")
+            raise
+
+    def generate_analysis_report(self, directory_path, stats):
+        """
+        Створення документації про аналіз директорії
+
+        Args:
+            directory_path (str): Шлях до директорії, що аналізується
+            stats (dict): Статистичні дані аналізу
+
+        Returns:
+            str: Шлях до згенерованої документації
+        """
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        report_filename = f"analysis_report_{timestamp}.md"
+        report_path = os.path.join(self.report_dir, report_filename)
+
+        self.logger.info(f"Формування аналітичної документації в {report_path}")
+
+        #Створення графіку для документації
+        lang_graph_path = self._create_language_distribution_graph(
+            {lang: [f"file{i}.ext" for i in range(count)] for lang, count in stats["language_breakdown"].items()},
+            timestamp
+        )
+        extension_graph_path = self._create_extension_distribution_graph(stats["extensions"], timestamp)
+
+        with open(report_path, 'w') as f:
+            f.write(f"# Документація про аналіз проекту\n\n")
+            f.write(f"Згенеровано: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+
+            f.write(f"## Підсумок\n\n")
+            f.write(f"- Проаналізована директорія: `{directory_path}`\n")
+            f.write(f"- Всього файлів: {stats['total_files']}\n")
+            f.write(f"- Загальний розмір: {self._format_size(stats['total_size'])}\n")
+            f.write(f"- Середній розмір файлу: {self._format_size(stats['average_size'])}\n")
+            f.write(f"- Загальна кількість рядків коду: {stats['total_lines']:,}\n")
+            f.write(f"- Середня кількість рядків у файлі: {stats['average_lines']:.1f}\n\n")
+
+            if lang_graph_path:
+                f.write(f"## Розповсюдження мов\n\n")
+                f.write(f"![Розповсюдження мов]({os.path.relpath(lang_graph_path, self.report_dir)})\n\n")
+
+            if extension_graph_path:
+                f.write(f"## Розповсюдження розширення\n\n")
+                f.write(f"![Розповсюдження розширення]({os.path.relpath(extension_graph_path, self.report_dir)})\n\n")
+
+            f.write(f"## Розподіл за мовами\n\n")
+            for lang, lang_stats in sorted(stats["language_stats"].items(),
+                                           key=lambda x: x[1]["file_count"], reverse=True):
+                f.write(f"### {lang}\n\n")
+                f.write(f"- Кількість файлів: {lang_stats['file_count']}\n")
+                f.write(f"- Загальний розмір: {self._format_size(lang_stats['total_size'])}\n")
+                f.write(f"- Середній розмір файлу: {self._format_size(lang_stats['average_size'])}\n")
+                f.write(f"- Всього рядків: {lang_stats['total_lines']:,}\n")
+                f.write(f"- Середні лінії: {lang_stats['average_lines']:.1f}\n")
+                f.write(f"- Найбільший файл: `{lang_stats['largest_file']}`\n")
+                f.write(f"- Розширення: {', '.join(lang_stats['extensions'])}\n\n")
+
+            f.write(f"## Найбільші файли\n\n")
+            f.write("| Ім'я файлу | Розмір | Мова | Змінено |\n")
+            f.write("|----------|------|----------|----------|\n")
+            for file_info in stats["largest_files"]:
+                f.write(f"| `{file_info['name']}` | {self._format_size(file_info['size'])} | " +
+                        f"{file_info.get('language', 'Unknown')} | {file_info['modified'].split('T')[0]} |\n")
+            f.write("\n")
+
+            f.write(f"## Останні файли\n\n")
+            f.write("| Ім'я файлу | Розмір | Мова | Змінено |\n")
+            f.write("|----------|------|----------|----------|\n")
+            for file_info in stats["newest_files"]:
+                modified_date = file_info['modified'].replace('T', ' ').split('.')[0]
+                f.write(f"| `{file_info['name']}` | {self._format_size(file_info['size'])} | " +
+                        f"{file_info.get('language', 'Unknown')} | {modified_date} |\n")
+            f.write("\n")
+
+            f.write(f"## Розширення\n\n")
+            f.write("| Розширення | Граф | Відсоток |\n")
+            f.write("|-----------|-------|------------|\n")
+            for ext, count in sorted(stats["extensions"].items(), key=lambda x: x[1], reverse=True):
+                percentage = (count / stats["total_files"]) * 100
+                f.write(f"| {ext if ext else '(no extension)'} | {count} | {percentage:.1f}% |\n")
+
+        self.logger.info(f"Документацію про аналіз сформовано в {report_path}")
+        return report_path
+
+    def _format_size(self, size_bytes):
+        """Відформування розміру байта до зручного для читання формату"""
+        for unit in ['B', 'KB', 'MB', 'GB']:
+            if size_bytes < 1024 or unit == 'GB':
+                return f"{size_bytes} {unit}"
+            size_bytes /= 1024
+
+    def _format_language_counts(self, categorized_files):
+        """Мова формату вважається рядком"""
+        counts = {lang: len(files) for lang, files in categorized_files.items()}
+        return ', '.join([f"{lang}: {count}" for lang, count in
+                          sorted(counts.items(), key=lambda x: x[1], reverse=True)])
+
+    def _create_language_distribution_graph(self, categorized_files, timestamp):
+        """Створення кругової діаграми розподілу мов"""
+        try:
+            #Підрахунок файлів на кожну мову
+            lang_counts = {lang: len(files) for lang, files in categorized_files.items()}
+
+            if not lang_counts:
+                return None
+
+            #Включення лише найпопулярніші мови, інші згрупувати
+            if len(lang_counts) > 7:
+                sorted_langs = sorted(lang_counts.items(), key=lambda x: x[1], reverse=True)
+                top_langs = dict(sorted_langs[:6])
+                other_count = sum(count for _, count in sorted_langs[6:])
+                top_langs["Other"] = other_count
+                lang_counts = top_langs
+
+            #Створення каталогу для графіків
+            graph_dir = os.path.join(self.report_dir, "graphs")
+            os.makedirs(graph_dir, exist_ok=True)
+
+            #Створення кругової діаграми
+            plt.figure(figsize=(10, 7))
+            plt.pie(lang_counts.values(), labels=lang_counts.keys(), autopct='%1.1f%%',
+                    startangle=140, shadow=True)
+            plt.axis('equal')
+            plt.title('Language Distribution')
+
+            #Збереження діаграми
+            graph_path = os.path.join(graph_dir, f"language_distribution_{timestamp}.png")
+            plt.savefig(graph_path)
+            plt.close()
+
+            return graph_path
+        except Exception as e:
+            self.logger.error(f"Помилка при створенні графіка розподілу мов: {str(e)}")
+            return None
+
+    def _create_extension_distribution_graph(self, extensions, timestamp):
+        """Створення гістограми розподілу розширень"""
+        try:
+            if not extensions:
+                return None
+
+            #Включення лише топових розширень
+            if len(extensions) > 10:
+                sorted_exts = sorted(extensions.items(), key=lambda x: x[1], reverse=True)
+                top_exts = dict(sorted_exts[:10])
+                extensions = top_exts
+
+            #Створення директорії для графіків
+            graph_dir = os.path.join(self.report_dir, "graphs")
+            os.makedirs(graph_dir, exist_ok=True)
+
+            #Створення гістограми
+            plt.figure(figsize=(12, 6))
+
+            #Замінення порожнього рядоку на '(без розширення)'
+            labels = [ext if ext else '(no extension)' for ext in extensions.keys()]
+
+            plt.bar(labels, extensions.values())
+            plt.xlabel('File Extensions')
+            plt.ylabel('Count')
+            plt.title('Extension Distribution')
+            plt.xticks(rotation=45, ha='right')
+            plt.tight_layout()
+
+            #Збереження малюнку
+            graph_path = os.path.join(graph_dir, f"extension_distribution_{timestamp}.png")
+            plt.savefig(graph_path)
+            plt.close()
+
+            return graph_path
+        except Exception as e:
+            self.logger.error(f"Помилка при створенні графіка розподілу розширень: {str(e)}")
+            return None

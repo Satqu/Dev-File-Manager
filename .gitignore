@@ -1,0 +1,39 @@
+# Віртуальне середовище
+.venv/
+venv/
+
+# Файли Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Тестові файли
+test_project/
+test_project_organized/
+
+# Логи та бекапи
+logs/
+backups/
+reports/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

@@ -1,0 +1,14 @@
+Temporary file content
+
+This is a sample temporary file with various content:
+
+1. Random data
+2. Test patterns
+3. Configuration values:
+   - timeout=300
+   - retries=3
+   - debug_mode=false
+
+File will be automatically deleted after processing.
+
+[EOF]

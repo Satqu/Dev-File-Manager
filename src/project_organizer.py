@@ -1,0 +1,242 @@
+import os
+import shutil
+import logging
+from datetime import datetime
+from typing import List, Dict, Tuple, Optional
+from src.file_analyzer import FileAnalyzer
+from src.utils.config import ConfigManager
+from src.report_generator_complete import ReportGenerator
+
+
+class ProjectOrganizer:
+    """Основний клас для організації файлів проєкту на основі типів та шаблонів"""
+
+    def __init__(self, config_path: Optional[str] = None):
+        """Ініціалізація організатору проєкту за допомогою конфігу"""
+        self.config_manager = ConfigManager(config_path)
+        self.config = self.config_manager.get_config()
+        self.file_analyzer = FileAnalyzer()
+        self.report_generator = ReportGenerator()
+
+        self._setup_logging()
+
+    def _setup_logging(self) -> None:
+        """Налаштування системи логування"""
+        log_dir = self.config.get("log_directory", "logs")
+        os.makedirs(log_dir, exist_ok=True)
+
+        log_filename = f"organizer_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+        log_path = os.path.join(log_dir, log_filename)
+
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.FileHandler(log_path),
+                logging.StreamHandler()
+            ]
+        )
+        self.logger = logging.getLogger(__name__)
+
+    def _create_category_rules(self) -> Dict[str, Dict[str, List[str]]]:
+        """Створення правил для категорій файлів з конфігу мови"""
+        language_config = self.config_manager.get_language_config()
+        category_rules = {}
+
+        #Конфігурації мови процесу
+        for lang, data in language_config.items():
+            category_rules[lang] = {
+                "extensions": [ext.lstrip('.') for ext in data["extensions"]],  # Remove dots
+                "patterns": data.get("signatures", [])
+            }
+
+        #Додавання стандартних категорій
+        category_rules.update({
+            "Documents": {"extensions": ["pdf", "docx", "txt", "rtf", "md"]},
+            "Images": {"extensions": ["jpg", "jpeg", "png", "gif", "bmp", "svg"]},
+            "Archives": {"extensions": ["zip", "rar", "7z", "tar", "gz"]},
+            "Data": {"extensions": ["csv", "json", "xlsx", "xml", "yml"]},
+            "Other": {"extensions": ["*"]}  # Catch-all category
+        })
+
+        return category_rules
+
+    def organize_directory(self, directory_path: str) -> bool:
+        """Впорядкування файлів в заданій директорії відповідно до конфігу"""
+        try:
+            if not os.path.isdir(directory_path):
+                self.logger.error(f"Шлях не є директорією або не існує: {directory_path}")
+                return False
+
+            self.logger.info(f"Початок організації директорії: {directory_path}")
+
+            #Створіть директорію виводу
+            output_dir = f"{directory_path}_organized"
+            os.makedirs(output_dir, exist_ok=True)
+
+            #Отримання всіх файлів (ігноруючи шаблони з конфігу)
+            all_files = self._collect_files(directory_path)
+            self.logger.info(f"Знайдено {len(all_files)} файли для організації")
+
+            #Розподіл файлів за категоріями
+            categorized, uncategorized = self._categorize_files(all_files)
+            self.logger.info(f"Файли розподілені в  {len(categorized)} групи")
+
+            #Переміщення файлів до їхніх категорій
+            moved_files = self._move_files_to_categories(output_dir, categorized)
+
+            #Генерація документації
+            self._generate_report(directory_path, output_dir, moved_files, uncategorized, categorized)
+
+            self.logger.info(f"Організація завершена. Переміщено {len(moved_files)} файлів.")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Організація зазнала невдачі: {str(e)}", exc_info=True)
+            return False
+
+    def _collect_files(self, directory_path: str) -> List[str]:
+        """Збирання всіх файлів з директорії, ігноруючи задані шаблони"""
+        ignore_patterns = self.config.get("ignore_patterns", [])
+        all_files = []
+
+        for root, _, files in os.walk(directory_path):
+            for file in files:
+                file_path = os.path.join(root, file)
+                if not any(ignore in file_path for ignore in ignore_patterns):
+                    all_files.append(file_path)
+
+        return all_files
+
+    def _categorize_files(self, file_paths: List[str]) -> Tuple[Dict[str, List[str]], List[str]]:
+        """Категоризація файлів на основі їхніх розширень"""
+        category_rules = self._create_category_rules()
+        categorized = {}
+        uncategorized = []
+
+        for file_path in file_paths:
+            ext = os.path.splitext(file_path)[1].lstrip('.').lower()
+            category = None
+
+            #Пошук категорії за розширенням
+            for cat, rules in category_rules.items():
+                if ext in rules["extensions"] or "*" in rules["extensions"]:
+                    category = cat
+                    break
+
+            if category:
+                categorized.setdefault(category, []).append(file_path)
+            else:
+                uncategorized.append(file_path)
+
+        return categorized, uncategorized
+
+    def _move_files_to_categories(self, base_dir: str, categorized: Dict[str, List[str]]) -> List[Tuple[str, str]]:
+        """Переміщення файлів до директорій їхніх категорій"""
+        moved_files = []
+        base_dir = os.path.normpath(base_dir)
+
+        for category, files in categorized.items():
+            category_dir = os.path.join(base_dir, category)
+            os.makedirs(category_dir, exist_ok=True)
+
+            for src in files:
+                try:
+                    filename = os.path.basename(src)
+                    dst = os.path.join(category_dir, filename)
+
+                    # Handle duplicates
+                    if os.path.exists(dst):
+                        base, ext = os.path.splitext(filename)
+                        dst = os.path.join(category_dir, f"{base}_{datetime.now().strftime('%H%M%S')}{ext}")
+
+                    shutil.move(src, dst)
+                    moved_files.append((src, dst))
+                    self.logger.debug(f"Переміщено {src} в {dst}")
+                except Exception as e:
+                    self.logger.error(f"Помилка переміщення {src}: {str(e)}")
+
+        return moved_files
+
+    def _generate_report(self, source_dir: str, output_dir: str, moved_files: List[Tuple[str, str]],
+                       uncategorized: List[str], categorized: Dict[str, List[str]]) -> None:
+        """Створення документації про організацію"""
+        try:
+            self.report_generator.generate_organization_report(
+                source_dir,
+                output_dir,
+                moved_files,
+                uncategorized,
+                categorized
+            )
+            self.logger.info("Документація успішно сформовано")
+        except Exception as e:
+            self.logger.error(f"Не вдалося сформувати документацію: {str(e)}")
+
+    def analyze_directory(self, directory_path: str) -> bool:
+        """Аналіз файлів у каталозі без їх переміщення"""
+        try:
+            if not os.path.isdir(directory_path):
+                self.logger.error(f"Шлях не є директорією або не існує: {directory_path}")
+                return False
+
+            self.logger.info(f"Початок аналізу директорії: {directory_path}")
+            all_files = self._collect_files(directory_path)
+            self.logger.info(f"Знайдено {len(all_files)} файлів для аналізу")
+
+            stats = self.file_analyzer.get_directory_statistics(all_files)
+            self.report_generator.generate_analysis_report(directory_path, stats)
+
+            self.logger.info("Аналіз успішно завершено")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Аналіз не пройшов: {str(e)}", exc_info=True)
+            return False
+
+    def backup_directory(self, directory_path: str, backup_location: Optional[str] = None) -> Optional[str]:
+        """Створення резервної копії директорії перед упорядкуванням"""
+        try:
+            if not os.path.isdir(directory_path):
+                self.logger.error(f"Шлях не є каталогом або не існує: {directory_path}")
+                return None
+
+            backup_dir = backup_location or self.config.get("backup_directory", "backups")
+            os.makedirs(backup_dir, exist_ok=True)
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_name = f"{os.path.basename(directory_path)}_backup_{timestamp}"
+            backup_path = os.path.join(backup_dir, backup_name)
+
+            self.logger.info(f"Створення резервної копії за адресою {backup_path}")
+            shutil.copytree(directory_path, backup_path)
+            self.logger.info("Резервну копію успішно створено")
+
+            return backup_path
+
+        except Exception as e:
+            self.logger.error(f"Не вдалося створити резервну копію: {str(e)}", exc_info=True)
+            return None
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Organize project files by category")
+    parser.add_argument("directory", help="Directory to organize")
+    parser.add_argument("--analyze-only", action="store_true", help="Only analyze files without moving them")
+    parser.add_argument("--backup", action="store_true", help="Create backup before organizing")
+
+    args = parser.parse_args()
+
+    organizer = ProjectOrganizer()
+
+    if args.backup:
+        if not organizer.backup_directory(args.directory):
+            print("Не вдалося створити резервну копію.")
+            exit(1)
+
+    if args.analyze_only:
+        organizer.analyze_directory(args.directory)
+    else:
+        organizer.organize_directory(args.directory)

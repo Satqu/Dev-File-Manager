@@ -1,0 +1,177 @@
+import click
+import os
+import sys
+import shutil
+from pathlib import Path
+from typing import Dict, List
+from datetime import datetime
+
+#Корінь проекту до шляху пошуку модулів
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
+
+# Імпорти модулів
+from src.file_analyzer import FileAnalyzer
+from src.project_organizer import ProjectOrganizer
+from src.utils.config import DEFAULT_PROJECTS_PATH, DEFAULT_ORGANIZED_PATHpython -m src.cli.commands
+
+
+def show_matches_in_file(file_path: str, signature: str) -> None:
+    """Відображення збігів у файлі"""
+    try:
+        with open(file_path, 'r', encoding='utf-8') as file:
+            lines = file.readlines()
+
+        click.echo(click.style("Збіги що знайдені:", fg='blue'))
+        found = False
+        for i, line in enumerate(lines, 1):
+            if signature in line:
+                found = True
+                highlighted = line.replace(
+                    signature,
+                    click.style(signature, fg='red', bold=True)
+                )
+                click.echo(f"Строка {i}: {highlighted.rstrip()}")
+
+        if not found:
+            click.echo("(Збіги, знайдені в бінарних даних або в режимі пошуку по всьому файлу)")
+
+    except UnicodeDecodeError:
+        click.echo("Не вдалося прочитати файл (невідоме кодування)")
+    except Exception as e:
+        click.echo(f"Помилка: {str(e)}")
+
+
+@click.group()
+def cli():
+    """Файловий менеджер CLI Tool"""
+    pass
+
+
+@cli.command()
+@click.argument('signature')
+@click.option('--directory', default=DEFAULT_PROJECTS_PATH,
+              help='Directory to search (default: ~/Projects)')
+@click.option('--show-content', is_flag=True,
+              help='Automatically show matches in files')
+def search(signature: str, directory: str, show_content: bool) -> None:
+    """Пошук файлів за сигнатурками"""
+    directory = str(Path(directory).expanduser())
+    analyzer = FileAnalyzer()
+
+    if not os.path.exists(directory):
+        click.echo(click.style(f"Помилка: Директорії '{directory}' не існує", fg='red'))
+        return
+
+    try:
+        # Отримання всіх файлів директорії
+        all_files = []
+        for root, _, files in os.walk(directory):
+            for file in files:
+                file_path = os.path.join(root, file)
+                if analyzer._is_text_file(file_path):
+                    all_files.append(file_path)
+
+        # Пошук сигнатурок в файлах
+        results = {}
+        for file_path in all_files:
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    if signature in content:
+                        lang = analyzer._detect_file_language(file_path) or "Unknown"
+                        if lang not in results:
+                            results[lang] = []
+                        results[lang].append(file_path)
+            except Exception:
+                continue
+
+        if not results:
+            click.echo(click.style("Файлів з такою сигнатуркою не знайдено", fg='yellow'))
+            return
+
+        for language, files in results.items():
+            click.echo(click.style(f"=== {language} ===", fg='green', bold=True))
+            for file_path in files:
+                rel_path = os.path.relpath(file_path, directory)
+                click.echo(f"  - {rel_path}")
+                if show_content:
+                    show_matches_in_file(file_path, signature)
+
+    except Exception as e:
+        click.echo(click.style(f"Пошук помилки: {str(e)}", fg='red'))
+
+
+@cli.command()
+@click.option('--source', default=DEFAULT_PROJECTS_PATH,
+              help='Source projects directory (default: ~/Projects)')
+@click.option('--dest', default=DEFAULT_ORGANIZED_PATH,
+              help='Target directory for organized files (default: ~/OrganizedProjects)')
+@click.option('--copy/--move', default=True,
+              help='Copy files (default) instead of moving')
+def organize(source: str, dest: str, copy: bool) -> None:
+    """Організація проєктів за мовами програмування"""
+    source = str(Path(source).expanduser())
+    dest = str(Path(dest).expanduser())
+
+    organizer = ProjectOrganizer()
+
+    if not os.path.exists(source):
+        click.echo(click.style(f"Помилка: Директорії '{source}' не існує", fg='red'))
+        return
+
+    try:
+        # Створення директорії куди організовуватимуться проєкти
+        os.makedirs(dest, exist_ok=True)
+
+        # Організація директорії
+        success = organizer.organize_directory(source)
+
+        if success:
+            click.echo(click.style("\nОрганізація виконана успішно!", fg='green'))
+        else:
+            click.echo(click.style("\nОрганізація виконана з деякими помилками", fg='yellow'))
+
+    except Exception as e:
+        click.echo(click.style(f"Помилка організації: {str(e)}", fg='red'))
+
+
+@cli.command()
+@click.option('--directory', default=DEFAULT_PROJECTS_PATH,
+              help='Directory to analyze (default: ~/Projects)')
+def stats(directory: str) -> None:
+    """Показ статистики файлів у директорії"""
+    directory = str(Path(directory).expanduser())
+    analyzer = FileAnalyzer()
+
+    if not os.path.exists(directory):
+        click.echo(click.style(f"Помилка: Директорії '{directory}' не існує", fg='red'))
+        return
+
+    try:
+        # Отримання всіх файлів у директорії
+        all_files = []
+        for root, _, files in os.walk(directory):
+            for file in files:
+                file_path = os.path.join(root, file)
+                all_files.append(file_path)
+
+        # Отримання статистики
+        stats = analyzer.get_directory_statistics(all_files)
+
+        # Вивід результатів
+        click.echo(click.style("\nФайлова статистика:", fg='green', bold=True))
+        click.echo(f"Всього файлів: {stats['total_files']}")
+        click.echo(f"Розмір всіх файлів: {stats['total_size'] / (1024 * 1024)} MB")
+
+        click.echo(click.style("\nРозподіл за мовами:", fg='blue', bold=True))
+        for lang, count in sorted(stats['language_breakdown'].items(),
+                                key=lambda x: x[1], reverse=True):
+            click.echo(f"{lang}: {count} files")
+
+    except Exception as e:
+        click.echo(click.style(f"Помилка аналізу: {str(e)}", fg='red'))
+
+
+if __name__ == '__main__':
+    cli()
